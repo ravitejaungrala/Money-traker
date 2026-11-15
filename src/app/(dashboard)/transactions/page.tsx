@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { fmtCurrency, fmtDDMMYY, getCategoryInfo, CATEGORIES, PAYMENT_METHODS } from "@/lib/utils";
 import {
-  Plus, Search, ArrowUpRight, ArrowDownRight, Filter, Download, ChevronLeft, ChevronRight,
+  Plus, Search, ArrowUpRight, ArrowDownRight, Filter, Download, ChevronLeft, ChevronRight, RefreshCw, Radio,
 } from "lucide-react";
 
 interface Transaction {
@@ -50,9 +50,11 @@ export default function TransactionsPage() {
   const [filterSearch, setFilterSearch] = useState("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
 
-  const loadTransactions = useCallback(async () => {
-    setLoading(true);
+  const loadTransactions = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     const params = new URLSearchParams();
     params.set("page", page.toString());
     params.set("limit", "15");
@@ -69,11 +71,18 @@ export default function TransactionsPage() {
     setTotal(data.total);
     setPages(data.pages);
     setLoading(false);
+    setLastRefreshed(new Date());
   }, [page, filterType, filterCategory, filterAccount, filterSearch, filterDateFrom, filterDateTo]);
 
   useEffect(() => {
     loadTransactions();
   }, [loadTransactions]);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = setInterval(() => loadTransactions(true), 30000);
+    return () => clearInterval(interval);
+  }, [autoRefresh, loadTransactions]);
 
   useEffect(() => {
     fetch("/api/accounts")
@@ -124,7 +133,27 @@ export default function TransactionsPage() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold">Transactions</h2>
-          <p className="text-sm text-gray-500 dark:text-gray-400">{total} total transactions</p>
+          <div className="flex items-center gap-3 mt-1">
+            <p className="text-sm text-gray-500 dark:text-gray-400">{total} total transactions</p>
+            <button
+              onClick={() => setAutoRefresh(!autoRefresh)}
+              className={`flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                autoRefresh
+                  ? "bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-800"
+                  : "bg-gray-50 text-gray-500 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700"
+              }`}
+            >
+              <Radio className={`h-3 w-3 ${autoRefresh ? "text-green-500 animate-pulse" : ""}`} />
+              {autoRefresh ? "Live" : "Paused"}
+            </button>
+            <button
+              onClick={() => loadTransactions(true)}
+              className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              title={`Last refreshed: ${fmtDDMMYY(lastRefreshed)}`}
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={exportCSV}>

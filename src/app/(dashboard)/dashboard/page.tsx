@@ -50,6 +50,8 @@ export default function DashboardPage() {
       }
     }
     load();
+    const interval = setInterval(() => load(), 30000);
+    return () => clearInterval(interval);
   }, []);
 
   if (loading) {

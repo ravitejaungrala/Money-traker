@@ -16,6 +16,7 @@ import {
   Wallet,
   Menu,
   X,
+  Smartphone,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -25,6 +26,7 @@ const navItems = [
   { href: "/accounts", label: "Accounts", icon: Landmark },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/budgets", label: "Budgets", icon: PiggyBank },
+  { href: "/integrations", label: "UPI Integration", icon: Smartphone },
   { href: "/notifications", label: "Notifications", icon: Bell },
   { href: "/settings", label: "Settings", icon: Settings },
 ];

@@ -58,6 +58,9 @@ export const CATEGORIES = [
 
 export const PAYMENT_METHODS = [
   { value: "UPI", label: "UPI" },
+  { value: "PHONEPE", label: "PhonePe" },
+  { value: "GPAY", label: "Google Pay" },
+  { value: "PAYTM", label: "Paytm" },
   { value: "IMPS", label: "IMPS" },
   { value: "NEFT", label: "NEFT" },
   { value: "RTGS", label: "RTGS" },
