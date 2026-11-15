@@ -4,6 +4,7 @@ import { transactions, bankAccounts, notifications } from "@/lib/schema";
 import { getCurrentUserId, unauthorized } from "@/lib/auth";
 import { generateDedupHash } from "@/lib/utils";
 import { parseCSVStatement } from "@/lib/csv-parser";
+import { parsePDFStatement } from "@/lib/pdf-parser";
 import { eq, and } from "drizzle-orm";
 
 export async function POST(req: NextRequest) {
@@ -32,15 +33,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Bank account not found" }, { status: 404 });
     }
 
-    const csvText = await file.text();
-    const parsed = parseCSVStatement(csvText);
+    const fileName = file.name.toLowerCase();
+    const isPDF = fileName.endsWith(".pdf") || file.type === "application/pdf";
 
-    if (parsed.transactions.length === 0) {
+    let parsedTransactions: Array<{ date: string; description: string; amount: number; type: "CREDIT" | "DEBIT"; balance?: number; referenceId?: string }>;
+    let bankName: string;
+    let formatName: string;
+    let parseErrors: string[];
+
+    if (isPDF) {
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const pdfResult = await parsePDFStatement(buffer);
+      parsedTransactions = pdfResult.transactions;
+      bankName = pdfResult.bank;
+      formatName = "PDF Statement";
+      parseErrors = pdfResult.errors;
+    } else {
+      const csvText = await file.text();
+      const csvResult = parseCSVStatement(csvText);
+      parsedTransactions = csvResult.transactions;
+      bankName = csvResult.bank;
+      formatName = csvResult.format;
+      parseErrors = csvResult.errors;
+    }
+
+    if (parsedTransactions.length === 0) {
       return NextResponse.json({
-        error: "No transactions found in CSV",
-        bank: parsed.bank,
-        format: parsed.format,
-        parseErrors: parsed.errors,
+        error: `No transactions found in ${isPDF ? "PDF" : "CSV"}`,
+        bank: bankName,
+        format: formatName,
+        parseErrors,
       }, { status: 400 });
     }
 
@@ -48,7 +70,9 @@ export async function POST(req: NextRequest) {
     let duplicates = 0;
     let errors = 0;
 
-    for (const tx of parsed.transactions) {
+    const source = isPDF ? "PDF" : "CSV";
+
+    for (const tx of parsedTransactions) {
       const dedupHash = generateDedupHash(accountId, tx.amount, tx.date, tx.referenceId);
 
       try {
@@ -64,7 +88,7 @@ export async function POST(req: NextRequest) {
             paymentMethod: "OTHER",
             transactionDate: tx.date,
             referenceId: tx.referenceId || null,
-            source: "CSV",
+            source,
             verificationStatus: "VERIFIED",
             dedupHash,
             balanceAfter: tx.balance ?? null,
@@ -81,7 +105,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (imported > 0) {
-      const lastTx = parsed.transactions[parsed.transactions.length - 1];
+      const lastTx = parsedTransactions[parsedTransactions.length - 1];
       if (lastTx.balance !== undefined) {
         db.update(bankAccounts)
           .set({
@@ -97,24 +121,24 @@ export async function POST(req: NextRequest) {
         .values({
           userId,
           type: "IMPORT",
-          title: "CSV Import Complete",
-          message: `Imported ${imported} transaction${imported !== 1 ? "s" : ""} from ${parsed.bank} statement${duplicates > 0 ? ` (${duplicates} duplicate${duplicates !== 1 ? "s" : ""} skipped)` : ""}.`,
+          title: `${source} Import Complete`,
+          message: `Imported ${imported} transaction${imported !== 1 ? "s" : ""} from ${bankName} ${source} statement${duplicates > 0 ? ` (${duplicates} duplicate${duplicates !== 1 ? "s" : ""} skipped)` : ""}.`,
         })
         .run();
     }
 
     return NextResponse.json({
       success: true,
-      bank: parsed.bank,
-      format: parsed.format,
-      total: parsed.transactions.length,
+      bank: bankName,
+      format: formatName,
+      total: parsedTransactions.length,
       imported,
       duplicates,
       errors,
-      parseErrors: parsed.errors,
+      parseErrors,
     });
   } catch {
-    return NextResponse.json({ error: "Failed to process CSV file" }, { status: 500 });
+    return NextResponse.json({ error: "Failed to process file" }, { status: 500 });
   }
 }
 

@@ -154,7 +154,7 @@ function CSVImportTab() {
             <div className={`flex h-8 w-8 items-center justify-center rounded-lg text-white text-xs font-bold shrink-0 ${
               name === "SBI" ? "bg-blue-600" : name === "HDFC" ? "bg-red-600" : name === "ICICI" ? "bg-orange-600" : "bg-gray-600"
             }`}>
-              {name === "Any Bank" ? "CSV" : name}
+              {name === "Any Bank" ? "PDF" : name}
             </div>
             <span className="text-xs font-medium hidden sm:block">{name}</span>
           </div>
@@ -163,8 +163,8 @@ function CSVImportTab() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Upload Bank Statement CSV</CardTitle>
-          <CardDescription>Download from net banking, then upload here</CardDescription>
+          <CardTitle className="text-base">Upload Bank Statement</CardTitle>
+          <CardDescription>Upload PDF or CSV downloaded from net banking</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {/* Select Account */}
@@ -207,7 +207,7 @@ function CSVImportTab() {
                 : "border-gray-300 dark:border-gray-700 hover:border-blue-400 hover:bg-blue-50 dark:hover:border-blue-600 dark:hover:bg-blue-900/10"
             }`}
           >
-            <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setFile(f); setResult(null); setError(null); } }} />
+            <input ref={fileRef} type="file" accept=".csv,.pdf" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setFile(f); setResult(null); setError(null); } }} />
             {file ? (
               <>
                 <FileSpreadsheet className="h-8 w-8 text-green-600 dark:text-green-400 mb-1" />
@@ -218,8 +218,8 @@ function CSVImportTab() {
             ) : (
               <>
                 <Upload className="h-8 w-8 text-gray-400 mb-1" />
-                <p className="font-medium text-sm">Click to upload CSV</p>
-                <p className="text-xs text-gray-500">SBI, HDFC, ICICI or any bank format</p>
+                <p className="font-medium text-sm">Click to upload PDF or CSV</p>
+                <p className="text-xs text-gray-500">SBI, HDFC, ICICI or any bank statement</p>
               </>
             )}
           </div>
@@ -259,7 +259,7 @@ function CSVImportTab() {
       {/* How to Download CSV */}
       <button onClick={() => setShowGuide(!showGuide)} className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
         <HelpCircle className="h-4 w-4" />
-        How to download CSV from your bank
+        How to download statement from your bank
         {showGuide ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
       </button>
       {showGuide && (
