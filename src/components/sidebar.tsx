@@ -17,6 +17,8 @@ import {
   Menu,
   X,
   Smartphone,
+  FileSpreadsheet,
+  Plug,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -26,7 +28,9 @@ const navItems = [
   { href: "/accounts", label: "Accounts", icon: Landmark },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/budgets", label: "Budgets", icon: PiggyBank },
+  { href: "/import", label: "CSV Import", icon: FileSpreadsheet },
   { href: "/integrations", label: "UPI Integration", icon: Smartphone },
+  { href: "/setup", label: "Setup & Connect", icon: Plug },
   { href: "/notifications", label: "Notifications", icon: Bell },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
