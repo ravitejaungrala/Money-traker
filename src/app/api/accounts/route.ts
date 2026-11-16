@@ -18,10 +18,11 @@ export async function GET() {
   if (!userId) return unauthorized();
 
   await connectDB();
-  const accounts = await BankAccount.find({ userId, isActive: true })
+  const raw = await BankAccount.find({ userId, isActive: true })
     .sort({ createdAt: 1 })
     .lean();
 
+  const accounts = raw.map((a) => ({ ...a, id: a._id }));
   return NextResponse.json(accounts);
 }
 

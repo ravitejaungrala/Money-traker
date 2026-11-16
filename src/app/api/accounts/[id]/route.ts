@@ -25,7 +25,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 
   const updated = await BankAccount.findByIdAndUpdate(params.id, updateData, { new: true }).lean();
-  return NextResponse.json(updated);
+  return NextResponse.json({ ...updated, id: updated?._id });
 }
 
 export async function DELETE(req: Request, { params }: { params: { id: string } }) {

@@ -14,7 +14,8 @@ export async function GET() {
     Notification.countDocuments({ userId, isRead: false }),
   ]);
 
-  return NextResponse.json({ notifications: notifList, unreadCount });
+  const notifications = notifList.map((n) => ({ ...n, id: n._id }));
+  return NextResponse.json({ notifications, unreadCount });
 }
 
 export async function PATCH(req: Request) {

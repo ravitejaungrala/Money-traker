@@ -41,6 +41,7 @@ export async function GET() {
 
   const budgetsWithSpending = budgetList.map((b) => ({
     ...b,
+    id: b._id,
     spent: spending[b.category] || 0,
     remaining: Math.max(0, b.monthlyLimit - (spending[b.category] || 0)),
     percentage: ((spending[b.category] || 0) / b.monthlyLimit) * 100,

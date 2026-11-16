@@ -106,7 +106,8 @@ function CSVImportTab() {
     fetch("/api/accounts")
       .then((r) => r.json())
       .then((data) => {
-        const list = Array.isArray(data) ? data : data.accounts || [];
+        const raw = Array.isArray(data) ? data : data.accounts || [];
+        const list = raw.map((a: Record<string, unknown>) => ({ ...a, id: (a.id || a._id) as string })) as Account[];
         setAccounts(list);
         if (list.length === 1) setSelectedAccount(list[0].id);
       })
