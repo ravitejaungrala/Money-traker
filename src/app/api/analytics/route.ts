@@ -1,37 +1,32 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { bankAccounts, transactions, notifications } from "@/lib/schema";
-import { eq, and, gte, lte, sql } from "drizzle-orm";
+import { connectDB } from "@/lib/db";
+import { BankAccount, Transaction, Notification } from "@/lib/schema";
 import { getCurrentUserId, unauthorized } from "@/lib/auth";
 
 export async function GET() {
   const userId = await getCurrentUserId();
   if (!userId) return unauthorized();
 
+  await connectDB();
+
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 
-  const accounts = await db.select().from(bankAccounts)
-    .where(and(eq(bankAccounts.userId, userId), eq(bankAccounts.isActive, true)));
-
-  const monthlyTx = await db.select().from(transactions)
-    .where(and(
-      eq(transactions.userId, userId),
-      gte(transactions.transactionDate, startOfMonth),
-      eq(transactions.verificationStatus, "VERIFIED"),
-    ));
-
-  const todayTx = await db.select().from(transactions)
-    .where(and(
-      eq(transactions.userId, userId),
-      gte(transactions.transactionDate, startOfDay),
-      eq(transactions.verificationStatus, "VERIFIED"),
-    ));
-
-  const [{ count: unreadNotifications }] = await db.select({ count: sql<number>`count(*)` })
-    .from(notifications)
-    .where(and(eq(notifications.userId, userId), eq(notifications.isRead, false)));
+  const [accounts, monthlyTx, todayTx, unreadNotifications] = await Promise.all([
+    BankAccount.find({ userId, isActive: true }).lean(),
+    Transaction.find({
+      userId,
+      transactionDate: { $gte: startOfMonth },
+      verificationStatus: "VERIFIED",
+    }).lean(),
+    Transaction.find({
+      userId,
+      transactionDate: { $gte: startOfDay },
+      verificationStatus: "VERIFIED",
+    }).lean(),
+    Notification.countDocuments({ userId, isRead: false }),
+  ]);
 
   const totalBalance = accounts.reduce((sum, a) => sum + (a.currentBalance ?? 0), 0);
   const monthlyIncome = monthlyTx.filter((t) => t.type === "CREDIT").reduce((sum, t) => sum + t.amount, 0);
@@ -61,13 +56,11 @@ export async function GET() {
     const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59);
 
-    const monthTransactions = await db.select().from(transactions)
-      .where(and(
-        eq(transactions.userId, userId),
-        gte(transactions.transactionDate, monthStart.toISOString()),
-        lte(transactions.transactionDate, monthEnd.toISOString()),
-        eq(transactions.verificationStatus, "VERIFIED"),
-      ));
+    const monthTransactions = await Transaction.find({
+      userId,
+      transactionDate: { $gte: monthStart.toISOString(), $lte: monthEnd.toISOString() },
+      verificationStatus: "VERIFIED",
+    }).lean();
 
     const income = monthTransactions.filter((t) => t.type === "CREDIT").reduce((s, t) => s + t.amount, 0);
     const expenses = monthTransactions.filter((t) => t.type === "DEBIT").reduce((s, t) => s + t.amount, 0);
@@ -91,7 +84,7 @@ export async function GET() {
       unreadNotifications,
     },
     accounts: accounts.map((a) => ({
-      id: a.id,
+      id: a._id,
       bankName: a.bankName,
       accountNumberLast4: a.accountNumberLast4,
       accountType: a.accountType,

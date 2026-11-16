@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { transactions, bankAccounts, notifications } from "@/lib/schema";
-import { eq, and, like } from "drizzle-orm";
+import { connectDB } from "@/lib/db";
+import { Transaction, BankAccount, Notification } from "@/lib/schema";
 import { getCurrentUserId, unauthorized } from "@/lib/auth";
 import { parseBankSMS } from "@/lib/sms-parser";
 import { generateDedupHash } from "@/lib/utils";
@@ -11,6 +10,7 @@ export async function POST(req: Request) {
   if (!userId) return unauthorized();
 
   try {
+    await connectDB();
     const body = await req.json();
     const { sms } = body;
 
@@ -26,20 +26,14 @@ export async function POST(req: Request) {
       }, { status: 422 });
     }
 
-    const accounts = await db.select().from(bankAccounts)
-      .where(and(
-        eq(bankAccounts.userId, userId),
-        eq(bankAccounts.isActive, true),
-        like(bankAccounts.accountNumberLast4, `%${parsed.accountLast4}%`),
-      ));
-
-    let account = accounts[0];
+    let account = await BankAccount.findOne({
+      userId,
+      isActive: true,
+      accountNumberLast4: { $regex: parsed.accountLast4 },
+    }).lean();
 
     if (!account) {
-      const [anyAccount] = await db.select().from(bankAccounts)
-        .where(and(eq(bankAccounts.userId, userId), eq(bankAccounts.isActive, true)))
-        .limit(1);
-      account = anyAccount;
+      account = await BankAccount.findOne({ userId, isActive: true }).lean();
     }
 
     if (!account) {
@@ -51,10 +45,9 @@ export async function POST(req: Request) {
     }
 
     const txDate = new Date().toISOString();
-    const dedupHash = generateDedupHash(account.id, parsed.amount, txDate, parsed.referenceId);
+    const dedupHash = generateDedupHash(account._id, parsed.amount, txDate, parsed.referenceId);
 
-    const [existing] = await db.select().from(transactions)
-      .where(eq(transactions.dedupHash, dedupHash)).limit(1);
+    const existing = await Transaction.findOne({ dedupHash }).lean();
     if (existing) {
       return NextResponse.json({
         status: "duplicate",
@@ -69,9 +62,9 @@ export async function POST(req: Request) {
       ? currentBalance + parsed.amount
       : currentBalance - parsed.amount;
 
-    const [transaction] = await db.insert(transactions).values({
+    const transaction = await Transaction.create({
       userId,
-      bankAccountId: account.id,
+      bankAccountId: account._id,
       amount: parsed.amount,
       type: parsed.type,
       category: parsed.category,
@@ -84,17 +77,18 @@ export async function POST(req: Request) {
       verificationStatus: "PENDING",
       dedupHash,
       balanceAfter: parsed.balance ?? newBalance,
-    }).returning();
+    });
 
-    await db.update(bankAccounts)
-      .set({ currentBalance: parsed.balance ?? newBalance, lastSyncedAt: txDate })
-      .where(eq(bankAccounts.id, account.id));
+    await BankAccount.findByIdAndUpdate(account._id, {
+      currentBalance: parsed.balance ?? newBalance,
+      lastSyncedAt: txDate,
+    });
 
     const threshold = account.thresholdAmount ?? 10000;
     const finalBalance = parsed.balance ?? newBalance;
     if (finalBalance < threshold && !(account.isBelowThreshold ?? false)) {
-      await db.update(bankAccounts).set({ isBelowThreshold: true }).where(eq(bankAccounts.id, account.id));
-      await db.insert(notifications).values({
+      await BankAccount.findByIdAndUpdate(account._id, { isBelowThreshold: true });
+      await Notification.create({
         userId,
         type: "LOW_BALANCE",
         title: "Low Balance Alert!",
@@ -102,7 +96,7 @@ export async function POST(req: Request) {
       });
     }
 
-    await db.insert(notifications).values({
+    await Notification.create({
       userId,
       type: parsed.type === "CREDIT" ? "NEW_CREDIT" : "LARGE_TRANSACTION",
       title: parsed.type === "CREDIT" ? "Money Received" : "Payment Detected",
@@ -111,7 +105,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       status: "created",
-      transaction,
+      transaction: transaction.toObject(),
       parsed,
       account: { bankName: account.bankName, last4: account.accountNumberLast4 },
       balance: parsed.balance ?? newBalance,

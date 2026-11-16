@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { transactions, bankAccounts, balanceSnapshots, notifications } from "@/lib/schema";
-import { eq, and, gte, lte, like, or, desc, sql } from "drizzle-orm";
+import { connectDB } from "@/lib/db";
+import { Transaction, BankAccount, BalanceSnapshot, Notification } from "@/lib/schema";
 import { getCurrentUserId, unauthorized } from "@/lib/auth";
 import { z } from "zod";
 import { generateDedupHash } from "@/lib/utils";
@@ -23,6 +22,8 @@ export async function GET(req: NextRequest) {
   const userId = await getCurrentUserId();
   if (!userId) return unauthorized();
 
+  await connectDB();
+
   const { searchParams } = new URL(req.url);
   const type = searchParams.get("type");
   const category = searchParams.get("category");
@@ -33,56 +34,51 @@ export async function GET(req: NextRequest) {
   const page = parseInt(searchParams.get("page") || "1");
   const limit = parseInt(searchParams.get("limit") || "20");
 
-  const conditions = [eq(transactions.userId, userId)];
-  if (type) conditions.push(eq(transactions.type, type));
-  if (category) conditions.push(eq(transactions.category, category));
-  if (bankAccountId) conditions.push(eq(transactions.bankAccountId, bankAccountId));
-  if (dateFrom) conditions.push(gte(transactions.transactionDate, dateFrom));
-  if (dateTo) conditions.push(lte(transactions.transactionDate, dateTo + "T23:59:59"));
+  const filter: Record<string, unknown> = { userId };
+  if (type) filter.type = type;
+  if (category) filter.category = category;
+  if (bankAccountId) filter.bankAccountId = bankAccountId;
+  if (dateFrom || dateTo) {
+    filter.transactionDate = {};
+    if (dateFrom) (filter.transactionDate as Record<string, string>).$gte = dateFrom;
+    if (dateTo) (filter.transactionDate as Record<string, string>).$lte = dateTo + "T23:59:59";
+  }
   if (search) {
-    conditions.push(
-      or(
-        like(transactions.description, `%${search}%`),
-        like(transactions.merchantName, `%${search}%`),
-      )!
-    );
+    filter.$or = [
+      { description: { $regex: search, $options: "i" } },
+      { merchantName: { $regex: search, $options: "i" } },
+    ];
   }
 
-  const where = and(...conditions);
+  const [txList, total] = await Promise.all([
+    Transaction.find(filter).sort({ transactionDate: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+    Transaction.countDocuments(filter),
+  ]);
 
-  const txList = await db.select({
-    id: transactions.id,
-    amount: transactions.amount,
-    type: transactions.type,
-    category: transactions.category,
-    description: transactions.description,
-    merchantName: transactions.merchantName,
-    paymentMethod: transactions.paymentMethod,
-    transactionDate: transactions.transactionDate,
-    referenceId: transactions.referenceId,
-    source: transactions.source,
-    verificationStatus: transactions.verificationStatus,
-    bankAccountBankName: bankAccounts.bankName,
-    bankAccountLast4: bankAccounts.accountNumberLast4,
-  })
-    .from(transactions)
-    .leftJoin(bankAccounts, eq(transactions.bankAccountId, bankAccounts.id))
-    .where(where)
-    .orderBy(desc(transactions.transactionDate))
-    .limit(limit)
-    .offset((page - 1) * limit);
+  const accountIds = [...new Set(txList.map((t) => t.bankAccountId))];
+  const accounts = await BankAccount.find({ _id: { $in: accountIds } }).lean();
+  const accountMap = new Map(accounts.map((a) => [a._id, a]));
 
-  const [{ count: total }] = await db.select({ count: sql<number>`count(*)` })
-    .from(transactions)
-    .where(where);
-
-  const formatted = txList.map((tx) => ({
-    ...tx,
-    bankAccount: {
-      bankName: tx.bankAccountBankName,
-      accountNumberLast4: tx.bankAccountLast4,
-    },
-  }));
+  const formatted = txList.map((tx) => {
+    const acc = accountMap.get(tx.bankAccountId);
+    return {
+      id: tx._id,
+      amount: tx.amount,
+      type: tx.type,
+      category: tx.category,
+      description: tx.description,
+      merchantName: tx.merchantName,
+      paymentMethod: tx.paymentMethod,
+      transactionDate: tx.transactionDate,
+      referenceId: tx.referenceId,
+      source: tx.source,
+      verificationStatus: tx.verificationStatus,
+      bankAccount: {
+        bankName: acc?.bankName,
+        accountNumberLast4: acc?.accountNumberLast4,
+      },
+    };
+  });
 
   return NextResponse.json({
     transactions: formatted,
@@ -98,21 +94,18 @@ export async function POST(req: Request) {
   if (!userId) return unauthorized();
 
   try {
+    await connectDB();
     const body = await req.json();
     const data = createSchema.parse(body);
 
-    const [account] = await db.select().from(bankAccounts)
-      .where(and(eq(bankAccounts.id, data.bankAccountId), eq(bankAccounts.userId, userId)))
-      .limit(1);
-
+    const account = await BankAccount.findOne({ _id: data.bankAccountId, userId }).lean();
     if (!account) {
       return NextResponse.json({ error: "Bank account not found" }, { status: 404 });
     }
 
     const dedupHash = generateDedupHash(data.bankAccountId, data.amount, data.transactionDate, data.referenceId);
 
-    const [existing] = await db.select().from(transactions)
-      .where(eq(transactions.dedupHash, dedupHash)).limit(1);
+    const existing = await Transaction.findOne({ dedupHash }).lean();
     if (existing) {
       return NextResponse.json({ error: "Duplicate transaction detected" }, { status: 409 });
     }
@@ -126,7 +119,7 @@ export async function POST(req: Request) {
     const isBelowThreshold = newBalance < threshold;
     const wasBelowThreshold = account.isBelowThreshold ?? false;
 
-    const [transaction] = await db.insert(transactions).values({
+    const transaction = await Transaction.create({
       userId,
       bankAccountId: data.bankAccountId,
       amount: data.amount,
@@ -142,35 +135,36 @@ export async function POST(req: Request) {
       verificationStatus: "VERIFIED",
       dedupHash,
       balanceAfter: newBalance,
-    }).returning();
+    });
 
-    await db.update(bankAccounts)
-      .set({ currentBalance: newBalance, isBelowThreshold })
-      .where(eq(bankAccounts.id, data.bankAccountId));
+    await BankAccount.findByIdAndUpdate(data.bankAccountId, {
+      currentBalance: newBalance,
+      isBelowThreshold,
+    });
 
-    await db.insert(balanceSnapshots).values({
+    await BalanceSnapshot.create({
       bankAccountId: data.bankAccountId,
       balance: newBalance,
       source: "MANUAL",
     });
 
     if (isBelowThreshold && !wasBelowThreshold) {
-      await db.insert(notifications).values({
+      await Notification.create({
         userId,
         type: "LOW_BALANCE",
         title: "Low Balance Alert!",
         message: `Your ${account.bankName} account (XXXX ${account.accountNumberLast4}) balance has dropped to ₹${newBalance.toLocaleString("en-IN")}. Minimum threshold: ₹${threshold.toLocaleString("en-IN")}. Amount needed: ₹${(threshold - newBalance).toLocaleString("en-IN")}.`,
         metadata: JSON.stringify({
-          bankAccountId: account.id,
+          bankAccountId: account._id,
           balance: newBalance,
           threshold,
-          triggerTransactionId: transaction.id,
+          triggerTransactionId: transaction._id,
         }),
       });
     }
 
     if (!isBelowThreshold && wasBelowThreshold) {
-      await db.insert(notifications).values({
+      await Notification.create({
         userId,
         type: "BALANCE_RECOVERED",
         title: "Balance Recovered",
@@ -178,7 +172,7 @@ export async function POST(req: Request) {
       });
     }
 
-    return NextResponse.json(transaction, { status: 201 });
+    return NextResponse.json(transaction.toObject(), { status: 201 });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return NextResponse.json({ error: err.errors[0].message }, { status: 400 });

@@ -1,21 +1,18 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { notifications } from "@/lib/schema";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { connectDB } from "@/lib/db";
+import { Notification } from "@/lib/schema";
 import { getCurrentUserId, unauthorized } from "@/lib/auth";
 
 export async function GET() {
   const userId = await getCurrentUserId();
   if (!userId) return unauthorized();
 
-  const notifList = await db.select().from(notifications)
-    .where(eq(notifications.userId, userId))
-    .orderBy(desc(notifications.createdAt))
-    .limit(50);
+  await connectDB();
 
-  const [{ count: unreadCount }] = await db.select({ count: sql<number>`count(*)` })
-    .from(notifications)
-    .where(and(eq(notifications.userId, userId), eq(notifications.isRead, false)));
+  const [notifList, unreadCount] = await Promise.all([
+    Notification.find({ userId }).sort({ createdAt: -1 }).limit(50).lean(),
+    Notification.countDocuments({ userId, isRead: false }),
+  ]);
 
   return NextResponse.json({ notifications: notifList, unreadCount });
 }
@@ -24,16 +21,13 @@ export async function PATCH(req: Request) {
   const userId = await getCurrentUserId();
   if (!userId) return unauthorized();
 
+  await connectDB();
   const body = await req.json();
 
   if (body.markAllRead) {
-    await db.update(notifications)
-      .set({ isRead: true })
-      .where(and(eq(notifications.userId, userId), eq(notifications.isRead, false)));
+    await Notification.updateMany({ userId, isRead: false }, { isRead: true });
   } else if (body.id) {
-    await db.update(notifications)
-      .set({ isRead: true })
-      .where(eq(notifications.id, body.id));
+    await Notification.findByIdAndUpdate(body.id, { isRead: true });
   }
 
   return NextResponse.json({ success: true });

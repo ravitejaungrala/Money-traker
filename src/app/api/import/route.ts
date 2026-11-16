@@ -1,17 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { transactions, bankAccounts, notifications } from "@/lib/schema";
+import { connectDB } from "@/lib/db";
+import { Transaction, BankAccount, Notification } from "@/lib/schema";
 import { getCurrentUserId, unauthorized } from "@/lib/auth";
 import { generateDedupHash } from "@/lib/utils";
 import { parseCSVStatement } from "@/lib/csv-parser";
 import { parsePDFStatement } from "@/lib/pdf-parser";
-import { eq, and } from "drizzle-orm";
 
 export async function POST(req: NextRequest) {
   const userId = await getCurrentUserId();
   if (!userId) return unauthorized();
 
   try {
+    await connectDB();
+
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
     const accountId = formData.get("accountId") as string | null;
@@ -23,16 +24,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No bank account selected" }, { status: 400 });
     }
 
-    const account = db
-      .select()
-      .from(bankAccounts)
-      .where(and(eq(bankAccounts.id, accountId), eq(bankAccounts.userId, userId)))
-      .get();
-
+    const account = await BankAccount.findOne({ _id: accountId, userId }).lean();
     if (!account) {
       return NextResponse.json({ error: "Bank account not found" }, { status: 404 });
     }
 
+    const password = formData.get("password") as string | null;
     const fileName = file.name.toLowerCase();
     const isPDF = fileName.endsWith(".pdf") || file.type === "application/pdf";
 
@@ -40,14 +37,16 @@ export async function POST(req: NextRequest) {
     let bankName: string;
     let formatName: string;
     let parseErrors: string[];
+    let rawTextSample: string | undefined;
 
     if (isPDF) {
       const buffer = Buffer.from(await file.arrayBuffer());
-      const pdfResult = await parsePDFStatement(buffer);
+      const pdfResult = await parsePDFStatement(buffer, password || undefined);
       parsedTransactions = pdfResult.transactions;
       bankName = pdfResult.bank;
       formatName = "PDF Statement";
       parseErrors = pdfResult.errors;
+      rawTextSample = pdfResult.rawTextSample;
     } else {
       const csvText = await file.text();
       const csvResult = parseCSVStatement(csvText);
@@ -58,6 +57,12 @@ export async function POST(req: NextRequest) {
     }
 
     if (parsedTransactions.length === 0) {
+      if (rawTextSample) {
+        const txnStart = rawTextSample.search(/Txn\s*Date|Transaction\s*Date|Value\s*Date|Particulars|Narration/i);
+        const startIdx = txnStart > 0 ? Math.max(0, txnStart - 50) : 0;
+        parseErrors.push("--- PDF Text Sample ---");
+        parseErrors.push(rawTextSample.slice(startIdx, startIdx + 2000));
+      }
       return NextResponse.json({
         error: `No transactions found in ${isPDF ? "PDF" : "CSV"}`,
         bank: bankName,
@@ -76,27 +81,25 @@ export async function POST(req: NextRequest) {
       const dedupHash = generateDedupHash(accountId, tx.amount, tx.date, tx.referenceId);
 
       try {
-        db.insert(transactions)
-          .values({
-            userId,
-            bankAccountId: accountId,
-            amount: tx.amount,
-            type: tx.type,
-            category: categorizeFromDescription(tx.description),
-            description: tx.description || null,
-            merchantName: extractMerchant(tx.description),
-            paymentMethod: "OTHER",
-            transactionDate: tx.date,
-            referenceId: tx.referenceId || null,
-            source,
-            verificationStatus: "VERIFIED",
-            dedupHash,
-            balanceAfter: tx.balance ?? null,
-          })
-          .run();
+        await Transaction.create({
+          userId,
+          bankAccountId: accountId,
+          amount: tx.amount,
+          type: tx.type,
+          category: categorizeFromDescription(tx.description),
+          description: tx.description || null,
+          merchantName: extractMerchant(tx.description),
+          paymentMethod: "OTHER",
+          transactionDate: tx.date,
+          referenceId: tx.referenceId || null,
+          source,
+          verificationStatus: "VERIFIED",
+          dedupHash,
+          balanceAfter: tx.balance ?? null,
+        });
         imported++;
       } catch (e: unknown) {
-        if (e instanceof Error && e.message.includes("UNIQUE constraint")) {
+        if (e instanceof Error && e.message.includes("duplicate key")) {
           duplicates++;
         } else {
           errors++;
@@ -107,24 +110,19 @@ export async function POST(req: NextRequest) {
     if (imported > 0) {
       const lastTx = parsedTransactions[parsedTransactions.length - 1];
       if (lastTx.balance !== undefined) {
-        db.update(bankAccounts)
-          .set({
-            currentBalance: lastTx.balance,
-            lastSyncedAt: new Date().toISOString(),
-            isBelowThreshold: lastTx.balance < (account.thresholdAmount ?? 10000),
-          })
-          .where(eq(bankAccounts.id, accountId))
-          .run();
+        await BankAccount.findByIdAndUpdate(accountId, {
+          currentBalance: lastTx.balance,
+          lastSyncedAt: new Date().toISOString(),
+          isBelowThreshold: lastTx.balance < (account.thresholdAmount ?? 10000),
+        });
       }
 
-      db.insert(notifications)
-        .values({
-          userId,
-          type: "IMPORT",
-          title: `${source} Import Complete`,
-          message: `Imported ${imported} transaction${imported !== 1 ? "s" : ""} from ${bankName} ${source} statement${duplicates > 0 ? ` (${duplicates} duplicate${duplicates !== 1 ? "s" : ""} skipped)` : ""}.`,
-        })
-        .run();
+      await Notification.create({
+        userId,
+        type: "IMPORT",
+        title: `${source} Import Complete`,
+        message: `Imported ${imported} transaction${imported !== 1 ? "s" : ""} from ${bankName} ${source} statement${duplicates > 0 ? ` (${duplicates} duplicate${duplicates !== 1 ? "s" : ""} skipped)` : ""}.`,
+      });
     }
 
     return NextResponse.json({

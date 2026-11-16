@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { users } from "@/lib/schema";
-import { eq } from "drizzle-orm";
+import { connectDB } from "@/lib/db";
+import { User } from "@/lib/schema";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 
@@ -13,23 +12,23 @@ const registerSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    await connectDB();
     const body = await req.json();
     const { name, email, password } = registerSchema.parse(body);
 
-    const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    const existing = await User.findOne({ email }).lean();
     if (existing) {
       return NextResponse.json({ error: "Email already registered" }, { status: 409 });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    const [user] = await db.insert(users).values({ name, email, passwordHash }).returning({
-      id: users.id,
-      email: users.email,
-      name: users.name,
-    });
+    const user = await User.create({ name, email, passwordHash });
 
-    return NextResponse.json(user, { status: 201 });
+    return NextResponse.json(
+      { id: user._id, email: user.email, name: user.name },
+      { status: 201 }
+    );
   } catch (err) {
     if (err instanceof z.ZodError) {
       return NextResponse.json({ error: err.errors[0].message }, { status: 400 });

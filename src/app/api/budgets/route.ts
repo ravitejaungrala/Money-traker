@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { budgets, transactions } from "@/lib/schema";
-import { eq, and, gte, lte } from "drizzle-orm";
+import { connectDB } from "@/lib/db";
+import { Budget, Transaction } from "@/lib/schema";
 import { getCurrentUserId, unauthorized } from "@/lib/auth";
 import { z } from "zod";
 
@@ -16,24 +15,23 @@ export async function GET() {
   const userId = await getCurrentUserId();
   if (!userId) return unauthorized();
 
+  await connectDB();
+
   const now = new Date();
   const month = now.getMonth() + 1;
   const year = now.getFullYear();
 
-  const budgetList = await db.select().from(budgets)
-    .where(and(eq(budgets.userId, userId), eq(budgets.month, month), eq(budgets.year, year)));
+  const budgetList = await Budget.find({ userId, month, year }).lean();
 
   const startOfMonth = new Date(year, month - 1, 1).toISOString();
   const endOfMonth = new Date(year, month, 0, 23, 59, 59).toISOString();
 
-  const txList = await db.select().from(transactions)
-    .where(and(
-      eq(transactions.userId, userId),
-      eq(transactions.type, "DEBIT"),
-      eq(transactions.verificationStatus, "VERIFIED"),
-      gte(transactions.transactionDate, startOfMonth),
-      lte(transactions.transactionDate, endOfMonth),
-    ));
+  const txList = await Transaction.find({
+    userId,
+    type: "DEBIT",
+    verificationStatus: "VERIFIED",
+    transactionDate: { $gte: startOfMonth, $lte: endOfMonth },
+  }).lean();
 
   const spending: Record<string, number> = {};
   for (const tx of txList) {
@@ -60,28 +58,27 @@ export async function POST(req: Request) {
   if (!userId) return unauthorized();
 
   try {
+    await connectDB();
     const body = await req.json();
     const data = createSchema.parse(body);
 
-    const [existing] = await db.select().from(budgets)
-      .where(and(
-        eq(budgets.userId, userId),
-        eq(budgets.category, data.category),
-        eq(budgets.month, data.month),
-        eq(budgets.year, data.year),
-      ))
-      .limit(1);
+    const existing = await Budget.findOne({
+      userId,
+      category: data.category,
+      month: data.month,
+      year: data.year,
+    }).lean();
 
     let budget;
     if (existing) {
-      [budget] = await db.update(budgets)
-        .set({ monthlyLimit: data.monthlyLimit })
-        .where(eq(budgets.id, existing.id))
-        .returning();
+      budget = await Budget.findByIdAndUpdate(
+        existing._id,
+        { monthlyLimit: data.monthlyLimit },
+        { new: true }
+      ).lean();
     } else {
-      [budget] = await db.insert(budgets)
-        .values({ userId, ...data })
-        .returning();
+      const created = await Budget.create({ userId, ...data });
+      budget = created.toObject();
     }
 
     return NextResponse.json(budget, { status: 201 });

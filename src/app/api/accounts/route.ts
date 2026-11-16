@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { bankAccounts, balanceSnapshots } from "@/lib/schema";
-import { eq, and } from "drizzle-orm";
+import { connectDB } from "@/lib/db";
+import { BankAccount, BalanceSnapshot } from "@/lib/schema";
 import { getCurrentUserId, unauthorized } from "@/lib/auth";
 import { z } from "zod";
 
@@ -18,9 +17,10 @@ export async function GET() {
   const userId = await getCurrentUserId();
   if (!userId) return unauthorized();
 
-  const accounts = await db.select().from(bankAccounts)
-    .where(and(eq(bankAccounts.userId, userId), eq(bankAccounts.isActive, true)))
-    .orderBy(bankAccounts.createdAt);
+  await connectDB();
+  const accounts = await BankAccount.find({ userId, isActive: true })
+    .sort({ createdAt: 1 })
+    .lean();
 
   return NextResponse.json(accounts);
 }
@@ -30,10 +30,11 @@ export async function POST(req: Request) {
   if (!userId) return unauthorized();
 
   try {
+    await connectDB();
     const body = await req.json();
     const data = createSchema.parse(body);
 
-    const [account] = await db.insert(bankAccounts).values({
+    const account = await BankAccount.create({
       userId,
       bankName: data.bankName,
       accountNumberLast4: data.accountNumberLast4,
@@ -43,17 +44,17 @@ export async function POST(req: Request) {
       currentBalance: data.currentBalance,
       thresholdAmount: data.thresholdAmount,
       isBelowThreshold: data.currentBalance < data.thresholdAmount,
-    }).returning();
+    });
 
     if (data.currentBalance > 0) {
-      await db.insert(balanceSnapshots).values({
-        bankAccountId: account.id,
+      await BalanceSnapshot.create({
+        bankAccountId: account._id,
         balance: data.currentBalance,
         source: "MANUAL",
       });
     }
 
-    return NextResponse.json(account, { status: 201 });
+    return NextResponse.json(account.toObject(), { status: 201 });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return NextResponse.json({ error: err.errors[0].message }, { status: 400 });

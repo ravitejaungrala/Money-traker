@@ -95,6 +95,7 @@ function CSVImportTab() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [password, setPassword] = useState("");
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -105,8 +106,9 @@ function CSVImportTab() {
     fetch("/api/accounts")
       .then((r) => r.json())
       .then((data) => {
-        setAccounts(data.accounts || []);
-        if (data.accounts?.length === 1) setSelectedAccount(data.accounts[0].id);
+        const list = Array.isArray(data) ? data : data.accounts || [];
+        setAccounts(list);
+        if (list.length === 1) setSelectedAccount(list[0].id);
       })
       .catch(() => {});
   }, []);
@@ -120,6 +122,7 @@ function CSVImportTab() {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("accountId", selectedAccount);
+    if (password) formData.append("password", password);
 
     try {
       const res = await fetch("/api/import", { method: "POST", body: formData });
@@ -223,6 +226,21 @@ function CSVImportTab() {
               </>
             )}
           </div>
+
+          {/* PDF Password */}
+          {file?.name.toLowerCase().endsWith(".pdf") && (
+            <div>
+              <label className="text-sm font-medium mb-1.5 block">PDF Password (if protected)</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="e.g. date of birth DDMMYYYY"
+                className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm placeholder:text-gray-400"
+              />
+              <p className="text-xs text-gray-500 mt-1">Most banks use your date of birth or customer ID as the PDF password</p>
+            </div>
+          )}
 
           <div className="flex gap-2">
             <Button onClick={handleUpload} disabled={!file || !selectedAccount || uploading} className="flex-1">
