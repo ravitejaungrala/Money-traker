@@ -1,4 +1,5 @@
-import pdfParse from "pdf-parse";
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pdfParse = require("pdf-parse/lib/pdf-parse") as typeof import("pdf-parse")["default"];
 
 interface PDFTransaction {
   date: string;
